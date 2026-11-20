@@ -11,6 +11,22 @@ open .build/XScreenshot.app
 
 也可以在 Xcode 中打开 `Package.swift` 编辑源码。通过上面的脚本生成 `.app` 并启动，以便 macOS 用应用的包标识处理屏幕录制权限。
 
+### 使用证书签名
+
+默认构建使用临时签名。修改代码后，macOS 可能要求重新授予屏幕录制权限。本机开发可以使用 **Apple Development** 证书。首次换用证书签名时需要重新授权一次。后续构建沿用同一签名身份和包标识 `com.ethan.xscreenshot`，即可保留授权。
+
+1. 在 Xcode 的「设置 → Accounts」中登录 Apple 账户，选择团队，点击「Manage Certificates…」，用「+」创建 **Apple Development** 证书。
+2. 运行 `security find-identity -v -p codesigning`，复制对应证书的完整名称或该行的哈希。
+3. 用该身份构建。将示例值替换为上一步复制的值。
+
+   ```sh
+   export XSCREENSHOT_SIGN_IDENTITY="Apple Development: Your Name (XXXXXXXXXX)"
+   ./scripts/build-app.sh
+   codesign --display -r - .build/XScreenshot.app
+   ```
+
+退出旧版后，用 `.build/XScreenshot.app` 替换原来安装的应用，再从该位置打开。每次构建时都设置 `XSCREENSHOT_SIGN_IDENTITY`。如果首次换用证书后系统设置仍显示旧授权，可以运行 `tccutil reset ScreenCapture com.ethan.xscreenshot`，再打开应用并授权。
+
 ## 截图
 
 1. 按 `Control + Shift + 4`，或在菜单栏的取景框图标中选择「区域截图」。
