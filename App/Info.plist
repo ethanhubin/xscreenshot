@@ -4,6 +4,8 @@
 <dict>
     <key>CFBundleExecutable</key>
     <string>XScreenshot</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon.icns</string>
     <key>CFBundleIdentifier</key>
     <string>com.ethan.xscreenshot</string>
     <key>CFBundleName</key>
