@@ -40,6 +40,9 @@ final class SelectionView: NSView, NSTextFieldDelegate {
     init(snapshot: DisplaySnapshot) {
         image = NSImage(cgImage: snapshot.image, size: snapshot.size)
         super.init(frame: CGRect(origin: .zero, size: snapshot.size))
+        addTrackingArea(NSTrackingArea(rect: .zero,
+                                       options: [.inVisibleRect, .activeInKeyWindow, .mouseMoved, .cursorUpdate],
+                                       owner: self, userInfo: nil))
         addSubview(toolbar)
         toolbar.isHidden = true
         toolbar.onTool = { [weak self] in self?.chooseTool($0) }
@@ -126,18 +129,12 @@ final class SelectionView: NSView, NSTextFieldDelegate {
         }
     }
 
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .crosshair)
-        if isEditing, tool == .select {
-            addCursorRect(region, cursor: .openHand)
-            for handle in ResizeHandle.all {
-                let cursor: NSCursor = handle.x == 0.5 ? .resizeUpDown : handle.y == 0.5 ? .resizeLeftRight : .crosshair
-                addCursorRect(handleRect(at: handle.point(in: region), size: 14).intersection(bounds), cursor: cursor)
-            }
-        } else if isEditing, tool == .text {
-            addCursorRect(region, cursor: .iBeam)
-        }
-        if !toolbar.isHidden { addCursorRect(toolbar.frame, cursor: .arrow) }
+    override func mouseMoved(with event: NSEvent) {
+        cursor(at: convert(event.locationInWindow, from: nil)).set()
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        cursor(at: convert(event.locationInWindow, from: nil)).set()
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -244,6 +241,21 @@ final class SelectionView: NSView, NSTextFieldDelegate {
             }
     }
 
+    func cursor(at point: CGPoint) -> NSCursor {
+        if case let .resize(_, _, handle) = drag { return handle.cursor }
+        if case .move = drag { return .openHand }
+        if !toolbar.isHidden, toolbar.frame.contains(point) { return .arrow }
+        if let textInput, textInput.field.frame.contains(point) { return .iBeam }
+        guard isEditing else { return .crosshair }
+        if let handle = resizeHandle(at: point) { return handle.cursor }
+        guard region.contains(point) else { return .crosshair }
+        switch tool {
+        case .select: return .openHand
+        case .text: return .iBeam
+        default: return .crosshair
+        }
+    }
+
     private func handleRect(at point: CGPoint, size: CGFloat) -> CGRect {
         CGRect(x: point.x - size / 2, y: point.y - size / 2, width: size, height: size)
     }
@@ -260,7 +272,10 @@ final class SelectionView: NSView, NSTextFieldDelegate {
             toolbar.frame = CGRect(origin: CGPoint(x: x, y: y), size: size)
             toolbar.update(tool: tool, color: color, canUndo: !history.isEmpty)
         }
-        window?.invalidateCursorRects(for: self)
+        if let window, window.isKeyWindow {
+            let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            if bounds.contains(point) { cursor(at: point).set() }
+        }
         needsDisplay = true
     }
 
@@ -304,5 +319,52 @@ final class SelectionView: NSView, NSTextFieldDelegate {
         if !discarding, !value.isEmpty {
             addMarkup(Markup(tool: .text, color: input.color, points: [input.origin], text: value))
         }
+    }
+}
+
+private extension ResizeHandle {
+    @MainActor
+    var cursor: NSCursor {
+        if #available(macOS 15.0, *) {
+            let position: NSCursor.FrameResizePosition
+            switch (x, y) {
+            case (0, 0): position = .topLeft
+            case (0.5, 0): position = .top
+            case (1, 0): position = .topRight
+            case (0, 0.5): position = .left
+            case (1, 0.5): position = .right
+            case (0, 1): position = .bottomLeft
+            case (0.5, 1): position = .bottom
+            default: position = .bottomRight
+            }
+            return .frameResize(position: position, directions: .all)
+        }
+
+        if x == 0.5 { return .resizeUpDown }
+        if y == 0.5 { return .resizeLeftRight }
+        return x == y ? Self.topLeftCursor : Self.topRightCursor
+    }
+
+    @MainActor private static let topLeftCursor = diagonalCursor(rotatedBy: -.pi / 4)
+    @MainActor private static let topRightCursor = diagonalCursor(rotatedBy: .pi / 4)
+
+    @MainActor
+    private static func diagonalCursor(rotatedBy angle: CGFloat) -> NSCursor {
+        let source = NSCursor.resizeLeftRight
+        let image = source.image
+        let hotSpot = source.hotSpot
+        let side = ceil(hypot(image.size.width, image.size.height))
+        let center = CGPoint(x: side / 2, y: side / 2)
+        let rotated = NSImage(size: CGSize(width: side, height: side), flipped: false) { _ in
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            context.saveGState()
+            defer { context.restoreGState() }
+            context.translateBy(x: center.x, y: center.y)
+            context.rotate(by: angle)
+            image.draw(at: CGPoint(x: -hotSpot.x, y: hotSpot.y - image.size.height),
+                       from: .zero, operation: .copy, fraction: 1)
+            return true
+        }
+        return NSCursor(image: rotated, hotSpot: center)
     }
 }
