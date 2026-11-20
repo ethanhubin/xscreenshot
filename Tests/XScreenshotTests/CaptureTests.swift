@@ -79,9 +79,11 @@ func selectionShowsTheEditorBeforeItCanConfirm() throws {
                                         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
     context.setFillColor(CGColor.white)
     context.fill(CGRect(x: 0, y: 0, width: 640, height: 460))
+    context.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
+    context.fill(CGRect(x: 25, y: 430, width: 16, height: 16))
     let image = try #require(context.makeImage())
     let view = SelectionView(snapshot: DisplaySnapshot(image: image, size: CGSize(width: 640, height: 460)))
-    let toolbar = try #require(view.subviews.first as? EditorToolbar)
+    let toolbar = try #require(view.subviews.compactMap { $0 as? EditorToolbar }.first)
     for tool in EditorTool.allCases {
         #expect(NSImage(systemSymbolName: tool.icon, accessibilityDescription: nil) != nil, "\(tool.icon)")
     }
@@ -110,18 +112,45 @@ func selectionShowsTheEditorBeforeItCanConfirm() throws {
     #expect(controls.count == EditorTool.allCases.count + MarkupColor.allCases.count + 3)
     #expect(controls.allSatisfy { !$0.bounds.isEmpty && toolbar.bounds.contains($0.convert($0.bounds, to: toolbar)) })
 
-    NSGraphicsContext.saveGraphicsState()
-    defer { NSGraphicsContext.restoreGraphicsState() }
-    context.translateBy(x: 0, y: 460)
-    context.scaleBy(x: 1, y: -1)
-    NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
-    view.draw(view.bounds)
-    let preview = NSBitmapImageRep(cgImage: try #require(context.makeImage()))
+    let previewLayer = try #require(view.subviews.compactMap { $0 as? SelectionPreview }.first?.layer)
+    func display(_ layer: CALayer) {
+        layer.displayIfNeeded()
+        layer.sublayers?.forEach { display($0) }
+    }
+    func renderPreview() throws -> NSBitmapImageRep {
+        display(previewLayer)
+        previewLayer.render(in: context)
+        return NSBitmapImageRep(cgImage: try #require(context.makeImage()))
+    }
+    let preview = try renderPreview()
     let shade = try #require(preview.colorAt(x: 20, y: 20))
     let revealed = try #require(preview.colorAt(x: 150, y: 150))
     #expect((0.48...0.57).contains(shade.redComponent))
     #expect(revealed.redComponent > 0.95)
+    #expect(try #require(preview.colorAt(x: 28, y: 20)).redComponent < 0.05)
 
     toolbar.onConfirm?()
     #expect(confirmed == CGRect(x: 100, y: 100, width: 330, height: 125))
+
+    toolbar.onTool?(.line)
+    view.mouseDown(with: try mouse(.leftMouseDown, at: CGPoint(x: 130, y: 140)))
+    view.mouseDragged(with: try mouse(.leftMouseDragged, at: CGPoint(x: 300, y: 140)))
+    view.mouseUp(with: try mouse(.leftMouseUp, at: CGPoint(x: 300, y: 140)))
+    let marked = try renderPreview()
+    #expect(try #require(marked.colorAt(x: 160, y: 140)).greenComponent < 0.3)
+
+    toolbar.onTool?(.select)
+    view.mouseDown(with: try mouse(.leftMouseDown, at: CGPoint(x: 220, y: 175)))
+    view.mouseDragged(with: try mouse(.leftMouseDragged, at: CGPoint(x: 260, y: 175)))
+    view.mouseUp(with: try mouse(.leftMouseUp, at: CGPoint(x: 320, y: 175)))
+    toolbar.onConfirm?()
+    #expect(confirmed == CGRect(x: 200, y: 100, width: 330, height: 125))
+    let moved = try renderPreview()
+    #expect((0.48...0.57).contains(try #require(moved.colorAt(x: 160, y: 140)).greenComponent))
+    #expect(try #require(moved.colorAt(x: 250, y: 140)).greenComponent < 0.3)
+    #expect(try #require(moved.colorAt(x: 480, y: 140)).greenComponent > 0.95)
+
+    toolbar.onUndo?()
+    let restored = try renderPreview()
+    #expect(try #require(restored.colorAt(x: 160, y: 140)).greenComponent < 0.3)
 }
