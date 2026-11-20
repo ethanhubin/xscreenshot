@@ -99,10 +99,39 @@ func selectionShowsTheEditorBeforeItCanConfirm() throws {
     view.mouseDown(with: try mouse(.leftMouseDown, at: CGPoint(x: 100, y: 100)))
     view.mouseDragged(with: try mouse(.leftMouseDragged, at: CGPoint(x: 430, y: 225)))
     #expect(toolbar.isHidden)
+    #expect(view.cursor(at: CGPoint(x: 430, y: 225)) === NSCursor.crosshair)
     view.mouseUp(with: try mouse(.leftMouseUp, at: CGPoint(x: 430, y: 225)))
     #expect(!toolbar.isHidden)
     #expect(toolbar.frame.minY > 225)
     #expect(confirmed == nil)
+
+    #expect(view.cursor(at: CGPoint(x: 200, y: 150)) === NSCursor.openHand)
+    #expect(view.cursor(at: CGPoint(x: 90, y: 90)) === NSCursor.crosshair)
+    #expect(view.cursor(at: CGPoint(x: toolbar.frame.midX, y: toolbar.frame.midY)) === NSCursor.arrow)
+    if #available(macOS 15.0, *) {
+        let handles: [(CGPoint, NSCursor.FrameResizePosition)] = [
+            (CGPoint(x: 96, y: 96), .topLeft),
+            (CGPoint(x: 265, y: 100), .top),
+            (CGPoint(x: 430, y: 100), .topRight),
+            (CGPoint(x: 100, y: 162.5), .left),
+            (CGPoint(x: 430, y: 162.5), .right),
+            (CGPoint(x: 100, y: 225), .bottomLeft),
+            (CGPoint(x: 265, y: 225), .bottom),
+            (CGPoint(x: 430, y: 225), .bottomRight)
+        ]
+        for (point, position) in handles {
+            let expected = NSCursor.frameResize(position: position, directions: .all)
+            #expect(view.cursor(at: point) == expected)
+        }
+    } else {
+        #expect(view.cursor(at: CGPoint(x: 265, y: 100)) === NSCursor.resizeUpDown)
+        #expect(view.cursor(at: CGPoint(x: 100, y: 162.5)) === NSCursor.resizeLeftRight)
+        let topLeft = view.cursor(at: CGPoint(x: 100, y: 100))
+        let topRight = view.cursor(at: CGPoint(x: 430, y: 100))
+        #expect(topLeft !== topRight)
+        #expect(topLeft === view.cursor(at: CGPoint(x: 430, y: 225)))
+        #expect(topRight === view.cursor(at: CGPoint(x: 100, y: 225)))
+    }
 
     func buttons(in parent: NSView) -> [NSButton] {
         parent.subviews.flatMap { child in (child as? NSButton).map { [$0] } ?? buttons(in: child) }

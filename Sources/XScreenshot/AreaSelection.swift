@@ -26,6 +26,7 @@ final class AreaSelection {
             panel.hasShadow = false
             panel.hidesOnDeactivate = false
             panel.becomesKeyOnlyIfNeeded = false
+            panel.acceptsMouseMovedEvents = true
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
 
             let view = SelectionView(snapshot: snapshot)
