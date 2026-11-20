@@ -53,7 +53,10 @@ final class AreaSelection {
     }
 
     func cancel() {
-        panels.forEach { $0.orderOut(nil) }
+        for panel in panels {
+            (panel.contentView as? SelectionView)?.stopDragUpdates()
+            panel.orderOut(nil)
+        }
         panels.removeAll()
     }
 }

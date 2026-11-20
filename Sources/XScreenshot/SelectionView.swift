@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 
 @MainActor
 final class SelectionView: NSView, NSTextFieldDelegate {
@@ -25,7 +26,7 @@ final class SelectionView: NSView, NSTextFieldDelegate {
         let color: MarkupColor
     }
 
-    private let image: NSImage
+    private let preview: SelectionPreview
     private let toolbar = EditorToolbar()
     private var region = CGRect.zero
     private var isEditing = false
@@ -36,13 +37,16 @@ final class SelectionView: NSView, NSTextFieldDelegate {
     private var draft: Markup?
     private var history: [Edit] = []
     private var textInput: TextInput?
+    private var dragDisplayLink: CADisplayLink?
 
     init(snapshot: DisplaySnapshot) {
-        image = NSImage(cgImage: snapshot.image, size: snapshot.size)
+        preview = SelectionPreview(snapshot: snapshot)
         super.init(frame: CGRect(origin: .zero, size: snapshot.size))
         addTrackingArea(NSTrackingArea(rect: .zero,
                                        options: [.inVisibleRect, .activeInKeyWindow, .mouseMoved, .cursorUpdate],
                                        owner: self, userInfo: nil))
+        preview.markupForDisplay = { [weak self] in (self?.markup ?? [], self?.draft) }
+        addSubview(preview)
         addSubview(toolbar)
         toolbar.isHidden = true
         toolbar.onTool = { [weak self] in self?.chooseTool($0) }
@@ -60,6 +64,11 @@ final class SelectionView: NSView, NSTextFieldDelegate {
     override var isOpaque: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        stopDragUpdates()
+        super.viewWillMove(toWindow: newWindow)
+    }
 
     override func mouseDown(with event: NSEvent) {
         guard allowsEditing else { return }
@@ -84,16 +93,30 @@ final class SelectionView: NSView, NSTextFieldDelegate {
             }
         }
         refresh()
+        switch drag {
+        case .select, .move, .resize:
+            guard window != nil, dragDisplayLink == nil else { return }
+            let link = displayLink(target: self, selector: #selector(displayFrame(_:)))
+            dragDisplayLink = link
+            link.add(to: .main, forMode: .common)
+        case .draw, nil:
+            break
+        }
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard drag != nil else { return }
+        guard let drag else { return }
         updateDrag(at: convert(event.locationInWindow, from: nil))
-        refresh()
+        if case .draw = drag {
+            preview.updateMarkup()
+        } else if dragDisplayLink == nil {
+            presentRegion()
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
         guard let drag else { return }
+        stopDragUpdates()
         updateDrag(at: convert(event.locationInWindow, from: nil))
         self.drag = nil
         switch drag {
@@ -107,11 +130,14 @@ final class SelectionView: NSView, NSTextFieldDelegate {
         case let .move(_, previous), let .resize(_, previous, _):
             if region != previous { history.append(.region(previous)) }
         case .draw:
-            if let draft, let first = draft.points.first,
-               draft.points.contains(where: { hypot($0.x - first.x, $0.y - first.y) >= 1 }) {
-                addMarkup(draft)
-            }
+            let finalDraft = draft
             draft = nil
+            if let finalDraft, let first = finalDraft.points.first,
+               finalDraft.points.contains(where: { hypot($0.x - first.x, $0.y - first.y) >= 1 }) {
+                addMarkup(finalDraft)
+            } else {
+                preview.updateMarkup()
+            }
         }
         refresh()
     }
@@ -137,36 +163,17 @@ final class SelectionView: NSView, NSTextFieldDelegate {
         cursor(at: convert(event.locationInWindow, from: nil)).set()
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        image.draw(in: bounds, from: .zero, operation: .copy, fraction: 1, respectFlipped: true, hints: nil)
+    func stopDragUpdates() {
+        dragDisplayLink?.invalidate()
+        dragDisplayLink = nil
+    }
 
-        let shade = NSBezierPath(rect: bounds)
-        shade.windingRule = .evenOdd
-        if !region.isEmpty { shade.appendRect(region) }
-        NSColor.black.withAlphaComponent(0.48).setFill()
-        shade.fill()
+    @objc private func displayFrame(_ link: CADisplayLink) {
+        presentRegion()
+    }
 
-        guard !region.isEmpty, let context = NSGraphicsContext.current?.cgContext else { return }
-        context.saveGState()
-        context.clip(to: region)
-        for annotation in markup { annotation.draw(in: context) }
-        draft?.draw(in: context)
-        context.restoreGState()
-
-        NSColor.black.withAlphaComponent(0.65).setStroke()
-        NSBezierPath.stroke(region.insetBy(dx: -1, dy: -1))
-        NSColor.white.setStroke()
-        NSBezierPath.stroke(region)
-        if isEditing, tool == .select {
-            for handle in ResizeHandle.all {
-                let dot = NSBezierPath(roundedRect: handleRect(at: handle.point(in: region), size: 7),
-                                       xRadius: 2, yRadius: 2)
-                NSColor.white.setFill()
-                dot.fill()
-                NSColor.black.withAlphaComponent(0.55).setStroke()
-                dot.stroke()
-            }
-        }
+    private func presentRegion() {
+        preview.updateRegion(region, showHandles: isEditing && tool == .select)
     }
 
     private func chooseTool(_ tool: EditorTool) {
@@ -212,6 +219,7 @@ final class SelectionView: NSView, NSTextFieldDelegate {
     private func addMarkup(_ annotation: Markup) {
         markup.append(annotation)
         history.append(.markup)
+        preview.updateMarkup()
     }
 
     private func undo() {
@@ -219,7 +227,9 @@ final class SelectionView: NSView, NSTextFieldDelegate {
         guard drag == nil, let edit = history.popLast() else { return }
         switch edit {
         case let .region(previous): region = previous
-        case .markup: markup.removeLast()
+        case .markup:
+            markup.removeLast()
+            preview.updateMarkup()
         }
         window?.makeFirstResponder(self)
         refresh()
@@ -261,6 +271,7 @@ final class SelectionView: NSView, NSTextFieldDelegate {
     }
 
     private func refresh() {
+        presentRegion()
         toolbar.isHidden = !isEditing || drag != nil
         if !toolbar.isHidden {
             let size = EditorToolbar.preferredSize
@@ -276,7 +287,6 @@ final class SelectionView: NSView, NSTextFieldDelegate {
             let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
             if bounds.contains(point) { cursor(at: point).set() }
         }
-        needsDisplay = true
     }
 
     private func beginText(at point: CGPoint) {
