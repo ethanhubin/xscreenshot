@@ -58,13 +58,11 @@ final class EditorToolbar: NSView {
         tools.distribution = .fillEqually
         for tool in EditorTool.allCases {
             let button = makeButton(tool.icon, title: tool.title, action: #selector(chooseTool(_:)))
+            if tool == .pen { button.image = Self.pencilImage }
             switch tool {
             case .select: button.toolTip = "选择标注或调整选区（双击编辑文字，Delete 删除标注）"
-            case .pen:
-                button.image = Self.pencilImage
-                button.toolTip = "画笔（滚动鼠标滚轮调整粗细）"
             case .text: button.toolTip = "文本（单击已有文字编辑，单击空白处输入，拖拽创建文本框）"
-            default: break
+            default: button.toolTip = "\(tool.title)（滚动鼠标滚轮调整粗细）"
             }
             button.setButtonType(.pushOnPushOff)
             toolButtons[tool] = button

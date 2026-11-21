@@ -3,6 +3,10 @@ import AppKit
 enum EditorTool: CaseIterable {
     case select, pen, line, rectangle, ellipse, arrow, text
 
+    var drawsStroke: Bool {
+        self != .select && self != .text
+    }
+
     var icon: String {
         switch self {
         case .select: "arrow.up.and.down.and.arrow.left.and.right"
@@ -204,7 +208,7 @@ struct Markup: Equatable {
             path.addLine(to: end)
             if tool == .arrow {
                 let angle = atan2(end.y - start.y, end.x - start.x)
-                let size = min(16, hypot(end.x - start.x, end.y - start.y) * 0.5)
+                let size = min(max(16, lineWidth * 3), hypot(end.x - start.x, end.y - start.y) * 0.5)
                 path.move(to: CGPoint(x: end.x - size * cos(angle - .pi / 6),
                                       y: end.y - size * sin(angle - .pi / 6)))
                 path.addLine(to: end)

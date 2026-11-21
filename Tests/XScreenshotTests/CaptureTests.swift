@@ -161,7 +161,7 @@ func selectionShowsTheEditorBeforeItCanConfirm() throws {
     #expect(toolbar.bounds.width == 350)
     #expect(toolbar.bounds.height == toolsPanel.frame.height)
     #expect(palettePanel.isHidden)
-    let lineButton = try #require(toolButtons.first { $0.toolTip == EditorTool.line.title })
+    let lineButton = try #require(toolButtons.first { $0.toolTip?.hasPrefix(EditorTool.line.title) == true })
     func hoverEvent(_ type: NSEvent.EventType) throws -> NSEvent {
         try #require(NSEvent.enterExitEvent(with: type, location: .zero, modifierFlags: [], timestamp: 0,
                                            windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0,
@@ -402,27 +402,21 @@ func draggingAMarkToTheCropEdgeKeepsTheStrokeReachable() {
 @MainActor
 func scrollingResizesTheBrushCursorAndEachNewStroke() throws {
     let (view, toolbar, snapshot) = try makeAnnotationCapture(tool: .pen)
-    func scroll(_ delta: Int32) throws {
-        let event = try #require(CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1,
-                                         wheel1: delta, wheel2: 0, wheel3: 0))
-        view.scrollWheel(with: try #require(NSEvent(cgEvent: event)))
-    }
-
     let start = CGPoint(x: 60, y: 80)
     let defaultCursor = view.cursor(at: start)
     #expect(defaultCursor !== NSCursor.crosshair)
-    try scroll(16)
+    try scrollVertically(16, in: view)
     let wideCursor = view.cursor(at: start)
     #expect(wideCursor.image.size.width > defaultCursor.image.size.width)
     #expect(wideCursor.hotSpot == CGPoint(x: wideCursor.image.size.width / 2, y: wideCursor.image.size.height / 2))
     try clickOrDrag(in: view, from: start, to: CGPoint(x: 170, y: start.y))
 
-    try scroll(-100)
+    try scrollVertically(-100, in: view)
     let fineCursor = view.cursor(at: start)
     #expect(fineCursor.image.size.width < wideCursor.image.size.width)
     try clickOrDrag(in: view, from: CGPoint(x: 60, y: 125), to: CGPoint(x: 170, y: 125))
     toolbar.onTool?(.line)
-    #expect(view.cursor(at: start) === NSCursor.crosshair)
+    #expect(view.cursor(at: start).image.size == defaultCursor.image.size)
     try clickOrDrag(in: view, from: CGPoint(x: 60, y: 170), to: CGPoint(x: 170, y: 170))
 
     var annotations: [Markup] = []
@@ -450,6 +444,56 @@ func scrollingResizesTheBrushCursorAndEachNewStroke() throws {
     #expect(try #require(preview.colorAt(x: 110, y: 132)).greenComponent > 0.95)
     let exported = NSBitmapImageRep(cgImage: try snapshot.export(region: region, markup: annotations))
     #expect(try #require(exported.colorAt(x: 110 - Int(region.minX), y: 87 - Int(region.minY))).greenComponent < 0.3)
+}
+
+@Test
+@MainActor
+func scrollingUpdatesEveryShapeToolAndTheStrokeInProgress() throws {
+    let (view, toolbar, _) = try makeAnnotationCapture(tool: .line)
+    let start = CGPoint(x: 62, y: 92)
+    let end = CGPoint(x: 244, y: 148)
+    let widths: [(EditorTool, Int32)] = [(.line, 8), (.rectangle, 10), (.ellipse, 12), (.arrow, 14)]
+    for (tool, delta) in widths {
+        toolbar.onTool?(tool)
+        let before = view.cursor(at: start).image.size.width
+        try scrollVertically(delta, in: view)
+        #expect(view.cursor(at: start).image.size.width > before)
+        try clickOrDrag(in: view, from: start, to: end)
+    }
+
+    toolbar.onTool?(.rectangle)
+    try clickOrDrag(in: view, from: start, to: end)
+    toolbar.onTool?(.arrow)
+    let arrowTip = CGPoint(x: end.x, y: start.y)
+    func mouse(_ type: NSEvent.EventType, at point: CGPoint) throws -> NSEvent {
+        try #require(NSEvent.mouseEvent(with: type, location: view.convert(point, to: nil), modifierFlags: [],
+                                       timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0,
+                                       clickCount: 1, pressure: 1))
+    }
+    view.mouseDown(with: try mouse(.leftMouseDown, at: start))
+    view.mouseDragged(with: try mouse(.leftMouseDragged, at: arrowTip))
+    let preview = try #require(view.subviews.compactMap { $0 as? SelectionPreview }.first)
+    let initialArrow = try #require(preview.markupForDisplay?().draft)
+    #expect(initialArrow.lineWidth == 17)
+    try scrollVertically(2, in: view)
+    let thickerArrow = try #require(preview.markupForDisplay?().draft)
+    #expect(thickerArrow.lineWidth == 19)
+    #expect(thickerArrow.drawingBounds.height - thickerArrow.lineWidth >
+            initialArrow.drawingBounds.height - initialArrow.lineWidth)
+    view.mouseUp(with: try mouse(.leftMouseUp, at: arrowTip))
+
+    var annotations: [Markup] = []
+    view.onConfirm = { _, markup in annotations = markup }
+    toolbar.onConfirm?()
+    #expect(annotations.map(\.tool) == [.line, .rectangle, .ellipse, .arrow, .rectangle, .arrow])
+    #expect(annotations.map(\.lineWidth) == [11, 13, 15, 17, 13, 19])
+}
+
+@MainActor
+private func scrollVertically(_ delta: Int32, in view: SelectionView) throws {
+    let event = try #require(CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1,
+                                     wheel1: delta, wheel2: 0, wheel3: 0))
+    view.scrollWheel(with: try #require(NSEvent(cgEvent: event)))
 }
 
 @MainActor

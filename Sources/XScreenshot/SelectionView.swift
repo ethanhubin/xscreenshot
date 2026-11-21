@@ -40,8 +40,8 @@ final class SelectionView: NSView {
     private var isEditing = false
     private var tool = EditorTool.select
     private var color = MarkupColor.red
-    private var brushWidth = Markup.defaultLineWidth
-    private lazy var brushCursor = NSCursor.brush(diameter: brushWidth.rounded())
+    private var strokeWidths: [EditorTool: CGFloat] = [:]
+    private var strokeCursor: (width: CGFloat, cursor: NSCursor)?
     private var drag: Drag?
     private var markup: [Markup] = []
     private var selectedMarkupIndex: Int?
@@ -102,8 +102,7 @@ final class SelectionView: NSView {
                 drag = .text(point)
             } else {
                 drag = .draw
-                let lineWidth = tool == .pen ? brushWidth.rounded() : Markup.defaultLineWidth
-                draft = Markup(tool: tool, color: color, points: [point, point], lineWidth: lineWidth)
+                draft = Markup(tool: tool, color: color, points: [point, point], lineWidth: activeStrokeWidth)
             }
         }
         refresh()
@@ -180,22 +179,34 @@ final class SelectionView: NSView {
     override func scrollWheel(with event: NSEvent) {
         if let input = textInput?.editor {
             input.adjustFont(with: event)
-        } else if tool == .pen {
-            adjustBrush(with: event)
+        } else if tool.drawsStroke {
+            adjustStrokeWidth(with: event)
         } else {
             super.scrollWheel(with: event)
         }
     }
 
-    private func adjustBrush(with event: NSEvent) {
+    private var activeStrokeWidth: CGFloat {
+        (strokeWidths[tool] ?? Markup.defaultLineWidth).rounded()
+    }
+
+    private var activeStrokeCursor: NSCursor {
+        let width = activeStrokeWidth
+        if let strokeCursor, strokeCursor.width == width { return strokeCursor.cursor }
+        let cursor = NSCursor.brush(diameter: width)
+        strokeCursor = (width, cursor)
+        return cursor
+    }
+
+    private func adjustStrokeWidth(with event: NSEvent) {
         guard event.momentumPhase.isEmpty, event.scrollingDeltaY != 0 else { return }
-        let previousWidth = brushWidth.rounded()
+        let previousWidth = activeStrokeWidth
         let step: CGFloat = event.hasPreciseScrollingDeltas ? 0.2 : 1
-        brushWidth = min(64, max(1, brushWidth + step * event.scrollingDeltaY))
-        let width = brushWidth.rounded()
+        let current = strokeWidths[tool] ?? Markup.defaultLineWidth
+        strokeWidths[tool] = min(64, max(1, current + step * event.scrollingDeltaY))
+        let width = activeStrokeWidth
         guard width != previousWidth else { return }
-        brushCursor = .brush(diameter: width)
-        if draft?.tool == .pen {
+        if draft?.tool == tool {
             draft?.lineWidth = width
             preview.updateMarkup()
         }
@@ -452,8 +463,8 @@ final class SelectionView: NSView {
             case let .region(handle): return handle?.cursor ?? .openHand
             case nil: return .crosshair
             }
-        case .pen where region.contains(point): return brushCursor
         case .text where region.contains(point): return .iBeam
+        case _ where tool.drawsStroke && region.contains(point): return activeStrokeCursor
         default: return .crosshair
         }
     }
