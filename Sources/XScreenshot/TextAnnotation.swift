@@ -77,6 +77,8 @@ struct TextLayout {
 
 @MainActor
 final class TextAnnotationEditor: NSTextView {
+    private static let boxPadding: CGFloat = 3
+
     let box: CGRect?
     var onFinish: ((Bool) -> Void)?
     var markupColor: MarkupColor {
@@ -85,8 +87,9 @@ final class TextAnnotationEditor: NSTextView {
     private let storage: NSTextStorage
     private let textBoxSize: CGSize?
 
-    init(at point: CGPoint, in box: CGRect?, color: MarkupColor) {
-        let padding: CGFloat = box == nil ? 2 : 3
+    init(at point: CGPoint, in box: CGRect?, color: MarkupColor, text: String = "",
+         fontSize: CGFloat = TextLayout.defaultFontSize) {
+        let padding = box == nil ? 2 : Self.boxPadding
         self.box = box
         markupColor = color
         textBoxSize = box?.insetBy(dx: padding, dy: padding).size
@@ -110,12 +113,21 @@ final class TextAnnotationEditor: NSTextView {
         if box == nil { minSize = CGSize(width: 28, height: 0) }
         TextLayout.configure(container, width: textBoxSize?.width)
         defaultParagraphStyle = TextLayout.paragraphStyle
-        font = TextLayout.font(size: TextLayout.defaultFontSize)
+        string = text
+        font = TextLayout.font(size: fontSize)
         textColor = color.color
         insertionPointColor = .controlAccentColor
         typingAttributes[.paragraphStyle] = TextLayout.paragraphStyle
         setAccessibilityLabel("截图文字")
-        fitFont()
+        if text.isEmpty { fitFont() }
+        setSelectedRange(NSRange(location: text.utf16.count, length: 0))
+    }
+
+    convenience init(editing annotation: Markup, at origin: CGPoint) {
+        let box = annotation.textBoxSize.map {
+            CGRect(origin: origin, size: $0).insetBy(dx: -Self.boxPadding, dy: -Self.boxPadding)
+        }
+        self.init(at: origin, in: box, color: annotation.color, text: annotation.text, fontSize: annotation.fontSize)
     }
 
     @available(*, unavailable)

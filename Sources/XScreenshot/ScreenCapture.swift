@@ -5,12 +5,19 @@ struct DisplaySnapshot {
     let image: CGImage
     let size: CGSize
 
+    private var pixelScale: CGSize {
+        CGSize(width: CGFloat(image.width) / size.width, height: CGFloat(image.height) / size.height)
+    }
+
+    func pixelRect(for region: CGRect) -> CGRect {
+        let scale = pixelScale
+        return region.applying(CGAffineTransform(scaleX: scale.width, y: scale.height)).integral
+            .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+    }
+
     @MainActor
     func export(region: CGRect, markup: [Markup]) throws -> CGImage {
-        let scaleX = CGFloat(image.width) / size.width
-        let scaleY = CGFloat(image.height) / size.height
-        let pixels = region.applying(CGAffineTransform(scaleX: scaleX, y: scaleY)).integral
-            .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        let pixels = pixelRect(for: region)
         guard !pixels.isEmpty, let cropped = image.cropping(to: pixels) else { throw CaptureError.imageEncodingFailed }
         guard !markup.isEmpty else { return cropped }
 
@@ -24,7 +31,8 @@ struct DisplaySnapshot {
         context.draw(cropped, in: CGRect(x: 0, y: 0, width: cropped.width, height: cropped.height))
         // Both the preview and annotations use display points measured from the top left.
         context.translateBy(x: -pixels.minX, y: CGFloat(cropped.height) + pixels.minY)
-        context.scaleBy(x: scaleX, y: -scaleY)
+        let scale = pixelScale
+        context.scaleBy(x: scale.width, y: -scale.height)
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
         NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
