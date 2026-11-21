@@ -27,6 +27,7 @@ final class EditorToolbar: NSView {
         tools.spacing = 3
         for tool in EditorTool.allCases {
             let button = makeButton(tool.icon, title: tool.title, action: #selector(chooseTool(_:)))
+            if tool == .text { button.toolTip = "文本（单击自由输入，拖拽创建文本框）" }
             button.setButtonType(.pushOnPushOff)
             toolButtons[tool] = button
             tools.addArrangedSubview(button)

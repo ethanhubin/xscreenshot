@@ -11,6 +11,7 @@ final class SelectionPreview: NSView, @preconcurrency CALayerDelegate {
     private let annotations = CALayer()
     private let outline = CALayer()
     private let border = CALayer()
+    private let textBox = CALayer()
     private let handles = ResizeHandle.all.map { _ in CALayer() }
     private var renderedRegion: CGRect?
     private var renderedHandles = false
@@ -35,6 +36,14 @@ final class SelectionPreview: NSView, @preconcurrency CALayerDelegate {
         border.borderWidth = 1
         scene.addSublayer(outline)
         scene.addSublayer(border)
+        textBox.isHidden = true
+        textBox.borderColor = NSColor.controlAccentColor.cgColor
+        textBox.borderWidth = 1.5
+        textBox.shadowColor = CGColor(gray: 0, alpha: 1)
+        textBox.shadowOpacity = 0.8
+        textBox.shadowOffset = .zero
+        textBox.shadowRadius = 1.5
+        scene.addSublayer(textBox)
         for handle in handles {
             handle.bounds.size = CGSize(width: 7, height: 7)
             handle.backgroundColor = CGColor.white
@@ -111,6 +120,14 @@ final class SelectionPreview: NSView, @preconcurrency CALayerDelegate {
             annotations.contentsScale = window?.backingScaleFactor ?? 1
             annotations.setNeedsDisplay()
         }
+    }
+
+    func updateTextBox(_ rect: CGRect?) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        textBox.isHidden = rect == nil
+        if let rect { textBox.frame = layerRect(for: rect) }
+        CATransaction.commit()
     }
 
     func draw(_ layer: CALayer, in context: CGContext) {

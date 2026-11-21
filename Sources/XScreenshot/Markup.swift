@@ -59,13 +59,16 @@ struct Markup {
     let color: MarkupColor
     var points: [CGPoint]
     var text = ""
+    var fontSize = TextLayout.defaultFontSize
+    var textBoxSize: CGSize?
 
     @MainActor
     var drawingBounds: CGRect {
         guard let start = points.first else { return .null }
         if tool == .text {
-            let size = (text as NSString).size(withAttributes: textAttributes)
-            return CGRect(origin: start, size: size).insetBy(dx: -2, dy: -2)
+            if let textBoxSize { return CGRect(origin: start, size: textBoxSize) }
+            let padding = max(2, fontSize / 8)
+            return textLayout.bounds.offsetBy(dx: start.x, dy: start.y).insetBy(dx: -padding, dy: -padding)
         }
         let rect = points.dropFirst().reduce(CGRect(origin: start, size: .zero)) {
             $0.union(CGRect(origin: $1, size: .zero))
@@ -75,15 +78,18 @@ struct Markup {
     }
 
     @MainActor
-    private var textAttributes: [NSAttributedString.Key: Any] {
-        [.foregroundColor: color.color, .font: NSFont.systemFont(ofSize: 22, weight: .semibold)]
+    private var textLayout: TextLayout {
+        TextLayout(text, fontSize: fontSize, color: color.color, width: textBoxSize?.width)
     }
 
     @MainActor
     func draw(in context: CGContext) {
         guard let start = points.first, let end = points.last else { return }
         if tool == .text {
-            (text as NSString).draw(at: start, withAttributes: textAttributes)
+            context.saveGState()
+            defer { context.restoreGState() }
+            if let textBoxSize { context.clip(to: CGRect(origin: start, size: textBoxSize)) }
+            textLayout.draw(at: start)
             return
         }
 

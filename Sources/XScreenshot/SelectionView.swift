@@ -2,7 +2,7 @@ import AppKit
 import QuartzCore
 
 @MainActor
-final class SelectionView: NSView, NSTextFieldDelegate {
+final class SelectionView: NSView {
     var onRegionSelected: (() -> Void)?
     var onCancel: (() -> Void)?
     var onConfirm: ((CGRect, [Markup]) -> Void)?
@@ -13,17 +13,12 @@ final class SelectionView: NSView, NSTextFieldDelegate {
         case move(CGPoint, CGRect)
         case resize(CGPoint, CGRect, ResizeHandle)
         case draw
+        case text(CGPoint)
     }
 
     private enum Edit {
         case region(CGRect)
         case markup
-    }
-
-    private struct TextInput {
-        let field: NSTextField
-        let origin: CGPoint
-        let color: MarkupColor
     }
 
     private let preview: SelectionPreview
@@ -36,7 +31,7 @@ final class SelectionView: NSView, NSTextFieldDelegate {
     private var markup: [Markup] = []
     private var draft: Markup?
     private var history: [Edit] = []
-    private var textInput: TextInput?
+    private var textInput: TextAnnotationEditor?
     private var dragDisplayLink: CADisplayLink?
 
     init(snapshot: DisplaySnapshot) {
@@ -86,7 +81,7 @@ final class SelectionView: NSView, NSTextFieldDelegate {
             case .select:
                 drag = .move(point, region)
             case .text:
-                beginText(at: point)
+                drag = .text(point)
             default:
                 drag = .draw
                 draft = Markup(tool: tool, color: color, points: [point, point])
@@ -99,7 +94,7 @@ final class SelectionView: NSView, NSTextFieldDelegate {
             let link = displayLink(target: self, selector: #selector(displayFrame(_:)))
             dragDisplayLink = link
             link.add(to: .main, forMode: .common)
-        case .draw, nil:
+        case .draw, .text, nil:
             break
         }
     }
@@ -117,7 +112,8 @@ final class SelectionView: NSView, NSTextFieldDelegate {
     override func mouseUp(with event: NSEvent) {
         guard let drag else { return }
         stopDragUpdates()
-        updateDrag(at: convert(event.locationInWindow, from: nil))
+        let point = convert(event.locationInWindow, from: nil)
+        updateDrag(at: point)
         self.drag = nil
         switch drag {
         case .select:
@@ -138,12 +134,22 @@ final class SelectionView: NSView, NSTextFieldDelegate {
             } else {
                 preview.updateMarkup()
             }
+        case let .text(start):
+            beginText(at: start, in: textBox(from: start, to: point))
         }
         refresh()
     }
 
     override func rightMouseDown(with event: NSEvent) {
         onCancel?()
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        if let textInput {
+            textInput.adjustFont(with: event)
+        } else {
+            super.scrollWheel(with: event)
+        }
     }
 
     override func keyDown(with event: NSEvent) {
@@ -186,10 +192,8 @@ final class SelectionView: NSView, NSTextFieldDelegate {
     private func chooseColor(_ color: MarkupColor) {
         self.color = color
         if let textInput {
-            textInput.field.textColor = color.color
-            textInput.field.backgroundColor = color == .black ? .white : .black
-            (textInput.field.currentEditor() as? NSTextView)?.textColor = color.color
-            self.textInput = TextInput(field: textInput.field, origin: textInput.origin, color: color)
+            textInput.markupColor = color
+            window?.makeFirstResponder(textInput)
         } else {
             window?.makeFirstResponder(self)
         }
@@ -211,6 +215,8 @@ final class SelectionView: NSView, NSTextFieldDelegate {
             } else {
                 draft?.points[1] = end
             }
+        case let .text(start):
+            preview.updateTextBox(textBox(from: start, to: point))
         case nil:
             break
         }
@@ -254,8 +260,9 @@ final class SelectionView: NSView, NSTextFieldDelegate {
     func cursor(at point: CGPoint) -> NSCursor {
         if case let .resize(_, _, handle) = drag { return handle.cursor }
         if case .move = drag { return .openHand }
+        if case .text = drag { return .crosshair }
         if !toolbar.isHidden, toolbar.frame.contains(point) { return .arrow }
-        if let textInput, textInput.field.frame.contains(point) { return .iBeam }
+        if let textInput, textInput.frame.contains(point) { return .iBeam }
         guard isEditing else { return .crosshair }
         if let handle = resizeHandle(at: point) { return handle.cursor }
         guard region.contains(point) else { return .crosshair }
@@ -289,46 +296,31 @@ final class SelectionView: NSView, NSTextFieldDelegate {
         }
     }
 
-    private func beginText(at point: CGPoint) {
-        let width: CGFloat = 190
-        let height: CGFloat = 31
-        let origin = CGPoint(x: min(point.x, bounds.maxX - width), y: min(point.y, bounds.maxY - height))
-        let field = NSTextField(frame: CGRect(origin: origin, size: CGSize(width: width, height: height)))
-        field.font = .systemFont(ofSize: 22, weight: .semibold)
-        field.placeholderString = "输入文字"
-        field.maximumNumberOfLines = 1
-        field.usesSingleLineMode = true
-        field.textColor = color.color
-        field.backgroundColor = color == .black ? .white : .black
-        field.delegate = self
-        textInput = TextInput(field: field, origin: point, color: color)
-        addSubview(field, positioned: .above, relativeTo: toolbar)
-        window?.makeFirstResponder(field)
+    private func textBox(from start: CGPoint, to point: CGPoint) -> CGRect? {
+        let box = CGRect.spanning(start, region.clamping(point))
+        return box.width >= 8 && box.height >= 8 ? box : nil
     }
 
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        switch NSStringFromSelector(selector) {
-        case "insertNewline:", "insertTab:":
-            finishText()
-        case "cancelOperation:":
-            finishText(discarding: true)
-        default:
-            return false
+    private func beginText(at point: CGPoint, in box: CGRect?) {
+        let input = TextAnnotationEditor(at: point, in: box, color: color)
+        if box == nil { input.maxSize = bounds.size }
+        input.onFinish = { [weak self] discarding in
+            self?.finishText(discarding: discarding)
+            self?.refresh()
         }
-        window?.makeFirstResponder(self)
-        refresh()
-        return true
+        textInput = input
+        addSubview(input, positioned: .below, relativeTo: toolbar)
+        window?.makeFirstResponder(input)
     }
 
     private func finishText(discarding: Bool = false) {
         guard let input = textInput else { return }
         textInput = nil
-        let value = (input.field.currentEditor()?.string ?? input.field.stringValue)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        input.field.removeFromSuperview()
-        if !discarding, !value.isEmpty {
-            addMarkup(Markup(tool: .text, color: input.color, points: [input.origin], text: value))
-        }
+        if window?.firstResponder === input { window?.makeFirstResponder(self) }
+        let annotation = discarding ? nil : input.annotation
+        input.removeFromSuperview()
+        preview.updateTextBox(nil)
+        if let annotation { addMarkup(annotation) }
     }
 }
 

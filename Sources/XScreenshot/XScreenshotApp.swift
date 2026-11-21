@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import ServiceManagement
 import SwiftUI
 
 @main
@@ -14,6 +15,9 @@ struct XScreenshotApp: App {
             }
             Button("设置截图快捷键…") {
                 appDelegate.editShortcut()
+            }
+            Button("设置自动启动…") {
+                appDelegate.editLaunchAtLogin()
             }
             Divider()
             Button("退出 XScreenshot") {
@@ -66,6 +70,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             showAlert(title: "无法使用该快捷键",
                       message: "\(shortcut.displayName) 可能已被系统或其他应用占用，请换一个组合键。（\(status)）")
+        }
+    }
+
+    func editLaunchAtLogin() {
+        guard !isPreparing, !selection.isActive, NSApp.modalWindow == nil else { return }
+
+        let service = SMAppService.mainApp
+        let status = service.status
+        let isRegistered = status == .enabled || status == .requiresApproval
+        let approvalMessage = "请在系统设置的「登录项」中允许 XScreenshot 自动启动。"
+        let checkbox = NSButton(checkboxWithTitle: "登录 macOS 后自动打开 XScreenshot", target: nil, action: nil)
+        checkbox.state = isRegistered ? .on : .off
+        checkbox.sizeToFit()
+
+        let alert = NSAlert()
+        alert.messageText = "随系统自动启动"
+        alert.accessoryView = checkbox
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消").keyEquivalent = "\u{1b}"
+        if status == .requiresApproval {
+            alert.informativeText = approvalMessage
+            alert.addButton(withTitle: "打开系统设置")
+        }
+
+        NSApp.activate()
+        let response = alert.runModal()
+        if response == .alertThirdButtonReturn {
+            SMAppService.openSystemSettingsLoginItems()
+            return
+        }
+        let shouldRegister = checkbox.state == .on
+        guard response == .alertFirstButtonReturn, shouldRegister != isRegistered else { return }
+
+        do {
+            if shouldRegister {
+                try service.register()
+            } else {
+                try service.unregister()
+            }
+        } catch {
+            guard shouldRegister, service.status == .requiresApproval else {
+                showAlert(title: "无法更改自动启动设置", message: error.localizedDescription)
+                return
+            }
+        }
+
+        if shouldRegister, service.status == .requiresApproval {
+            let approval = NSAlert()
+            approval.messageText = "自动启动等待批准"
+            approval.informativeText = approvalMessage
+            approval.addButton(withTitle: "打开系统设置")
+            approval.addButton(withTitle: "稍后").keyEquivalent = "\u{1b}"
+            if approval.runModal() == .alertFirstButtonReturn {
+                SMAppService.openSystemSettingsLoginItems()
+            }
         }
     }
 
