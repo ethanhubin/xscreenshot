@@ -70,6 +70,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
     }
 
+    func menuWillOpen(_ menu: NSMenu) {
+        hotKey.beginMenuTracking(menu)
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        hotKey.endMenuTracking()
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
         captureItem.title = "区域截图  \(savedShortcut.displayName)"
 
@@ -80,14 +88,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .enabled:
             launchItem.state = .on
             launchItem.title = "登录时自动启动（已开启）"
-        case .notRegistered:
+        // macOS can return .notFound before the first registration.
+        case .notRegistered, .notFound:
             launchItem.state = .off
             launchItem.title = "登录时自动启动（已关闭）"
         case .requiresApproval:
             launchItem.state = .mixed
             launchItem.title = "登录时自动启动（待批准）"
-        case .notFound:
-            fallthrough
         @unknown default:
             launchItem.state = .off
             launchItem.title = "登录时自动启动（不可用）"
@@ -112,7 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !isPreparing, !selection.isActive, NSApp.modalWindow == nil else { return }
 
         let status = launchService.status
-        let shouldRegister = status == .notRegistered
+        let shouldRegister = status == .notRegistered || status == .notFound
         guard shouldRegister || status == .enabled || status == .requiresApproval else { return }
 
         do {

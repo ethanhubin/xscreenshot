@@ -55,8 +55,10 @@ struct Shortcut: Codable, Equatable {
 @MainActor
 final class GlobalHotKey {
     private static let signature: OSType = 0x58534352 // XSCR
+    private static let menuTrackingMode = CFRunLoopMode(RunLoop.Mode.eventTracking.rawValue as CFString)
     private var handler: EventHandlerRef?
     private var hotKey: EventHotKeyRef?
+    private var menuTrackingObserver: CFRunLoopObserver?
     private var activeShortcut: Shortcut?
     private var activeID: UInt32 = 0
     private var action: (() -> Void)?
@@ -96,6 +98,7 @@ final class GlobalHotKey {
     }
 
     func unregister() {
+        endMenuTracking()
         if let hotKey { UnregisterEventHotKey(hotKey) }
         if let handler { RemoveEventHandler(handler) }
         hotKey = nil
@@ -104,13 +107,47 @@ final class GlobalHotKey {
         action = nil
     }
 
-    private func handle(_ event: EventRef) -> OSStatus {
+    func beginMenuTracking(_ menu: NSMenu) {
+        guard hotKey != nil, menuTrackingObserver == nil else { return }
+        let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeSources.rawValue, true, 0) { [weak self, weak menu] _, _ in
+            MainActor.assumeIsolated {
+                guard let self, self.hasPendingPress else { return }
+                self.endMenuTracking()
+                // AppKit defers delivery of the queued hotkey until menu tracking ends.
+                menu?.cancelTrackingWithoutAnimation()
+            }
+        }
+        menuTrackingObserver = observer
+        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, Self.menuTrackingMode)
+    }
+
+    func endMenuTracking() {
+        guard let menuTrackingObserver else { return }
+        CFRunLoopRemoveObserver(CFRunLoopGetMain(), menuTrackingObserver, Self.menuTrackingMode)
+        self.menuTrackingObserver = nil
+    }
+
+    private var hasPendingPress: Bool {
+        FindSpecificEventInQueue(GetMainEventQueue(), { event, context in
+            MainActor.assumeIsolated {
+                guard let event, let context else { return DarwinBoolean(false) }
+                let hotKey = Unmanaged<GlobalHotKey>.fromOpaque(context).takeUnretainedValue()
+                return DarwinBoolean(hotKey.isActivePress(event))
+            }
+        }, Unmanaged.passUnretained(self).toOpaque()) != nil
+    }
+
+    private func isActivePress(_ event: EventRef) -> Bool {
+        guard GetEventClass(event) == OSType(kEventClassKeyboard),
+              GetEventKind(event) == UInt32(kEventHotKeyPressed) else { return false }
         var id = EventHotKeyID()
         let status = GetEventParameter(event, OSType(kEventParamDirectObject), OSType(typeEventHotKeyID),
                                        nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
-        guard status == noErr, id.signature == Self.signature, id.id == activeID else {
-            return OSStatus(eventNotHandledErr)
-        }
+        return status == noErr && id.signature == Self.signature && id.id == activeID
+    }
+
+    private func handle(_ event: EventRef) -> OSStatus {
+        guard isActivePress(event) else { return OSStatus(eventNotHandledErr) }
         action?()
         return noErr
     }
