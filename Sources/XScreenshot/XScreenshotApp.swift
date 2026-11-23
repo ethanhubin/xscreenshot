@@ -1,37 +1,28 @@
 import AppKit
 import CoreGraphics
 import ServiceManagement
-import SwiftUI
 
 @main
-struct XScreenshotApp: App {
-    @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
-    @AppStorage(Shortcut.storageKey) private var shortcutData = Data()
-
-    var body: some Scene {
-        MenuBarExtra("XScreenshot", systemImage: "viewfinder") {
-            Button("区域截图  \(Shortcut.restored(from: shortcutData).displayName)") {
-                appDelegate.beginSelection()
-            }
-            Button("设置截图快捷键…") {
-                appDelegate.editShortcut()
-            }
-            Button("设置自动启动…") {
-                appDelegate.editLaunchAtLogin()
-            }
-            Divider()
-            Button("退出 XScreenshot") {
-                NSApp.terminate(nil)
-            }
-            .keyboardShortcut("q")
-        }
+@MainActor
+struct XScreenshotApp {
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.setActivationPolicy(.accessory)
+        withExtendedLifetime(delegate) { app.run() }
     }
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let hotKey = GlobalHotKey()
     private let selection = AreaSelection()
+    private let launchService = SMAppService.mainApp
+    private lazy var statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    private let captureItem = NSMenuItem(title: "区域截图", action: #selector(beginSelection), keyEquivalent: "")
+    private let launchItem = NSMenuItem(title: "登录时自动启动", action: nil, keyEquivalent: "")
+    private let loginSettingsItem = NSMenuItem(title: "打开系统登录项…", action: #selector(openLoginSettings), keyEquivalent: "")
     private var isPreparing = false
     private var hasRequestedPermission = false
     private var displayGeneration = 0
@@ -41,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        configureMenu()
         let shortcut = savedShortcut
         let status = registerShortcut(shortcut)
         if status != noErr {
@@ -60,7 +52,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         selection.cancel()
     }
 
-    func editShortcut() {
+    private func configureMenu() {
+        let menu = NSMenu()
+        menu.delegate = self
+        let shortcutItem = NSMenuItem(title: "设置截图快捷键…", action: #selector(editShortcut), keyEquivalent: "")
+        for item in [captureItem, shortcutItem, launchItem, loginSettingsItem] {
+            item.target = self
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let quitItem = NSMenuItem(title: "退出 XScreenshot", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quitItem.target = NSApp
+        menu.addItem(quitItem)
+
+        statusItem.button?.image = NSImage(systemSymbolName: "viewfinder", accessibilityDescription: "XScreenshot")
+        statusItem.button?.setAccessibilityLabel("XScreenshot")
+        statusItem.menu = menu
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        captureItem.title = "区域截图  \(savedShortcut.displayName)"
+
+        let status = launchService.status
+        loginSettingsItem.isHidden = status != .requiresApproval
+        launchItem.action = #selector(toggleLaunchAtLogin)
+        switch status {
+        case .enabled:
+            launchItem.state = .on
+            launchItem.title = "登录时自动启动（已开启）"
+        case .notRegistered:
+            launchItem.state = .off
+            launchItem.title = "登录时自动启动（已关闭）"
+        case .requiresApproval:
+            launchItem.state = .mixed
+            launchItem.title = "登录时自动启动（待批准）"
+        case .notFound:
+            fallthrough
+        @unknown default:
+            launchItem.state = .off
+            launchItem.title = "登录时自动启动（不可用）"
+            launchItem.action = nil
+        }
+    }
+
+    @objc private func editShortcut() {
         guard !isPreparing, !selection.isActive, NSApp.modalWindow == nil else { return }
         guard let shortcut = ShortcutSettings.choose(current: savedShortcut),
               let data = try? JSONEncoder().encode(shortcut) else { return }
@@ -73,66 +108,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func editLaunchAtLogin() {
+    @objc private func toggleLaunchAtLogin() {
         guard !isPreparing, !selection.isActive, NSApp.modalWindow == nil else { return }
 
-        let service = SMAppService.mainApp
-        let status = service.status
-        let isRegistered = status == .enabled || status == .requiresApproval
-        let approvalMessage = "请在系统设置的「登录项」中允许 XScreenshot 自动启动。"
-        let checkbox = NSButton(checkboxWithTitle: "登录 macOS 后自动打开 XScreenshot", target: nil, action: nil)
-        checkbox.state = isRegistered ? .on : .off
-        checkbox.sizeToFit()
-
-        let alert = NSAlert()
-        alert.messageText = "随系统自动启动"
-        alert.accessoryView = checkbox
-        alert.addButton(withTitle: "保存")
-        alert.addButton(withTitle: "取消").keyEquivalent = "\u{1b}"
-        if status == .requiresApproval {
-            alert.informativeText = approvalMessage
-            alert.addButton(withTitle: "打开系统设置")
-        }
-
-        NSApp.activate()
-        let response = alert.runModal()
-        if response == .alertThirdButtonReturn {
-            SMAppService.openSystemSettingsLoginItems()
-            return
-        }
-        let shouldRegister = checkbox.state == .on
-        guard response == .alertFirstButtonReturn, shouldRegister != isRegistered else { return }
+        let status = launchService.status
+        let shouldRegister = status == .notRegistered
+        guard shouldRegister || status == .enabled || status == .requiresApproval else { return }
 
         do {
             if shouldRegister {
-                try service.register()
+                try launchService.register()
             } else {
-                try service.unregister()
+                try launchService.unregister()
             }
         } catch {
-            guard shouldRegister, service.status == .requiresApproval else {
+            guard shouldRegister, launchService.status == .requiresApproval else {
                 showAlert(title: "无法更改自动启动设置", message: error.localizedDescription)
                 return
             }
         }
 
-        if shouldRegister, service.status == .requiresApproval {
+        if shouldRegister, launchService.status == .requiresApproval {
             let approval = NSAlert()
             approval.messageText = "自动启动等待批准"
-            approval.informativeText = approvalMessage
+            approval.informativeText = "请在系统设置的「登录项」中允许 XScreenshot 自动启动。"
             approval.addButton(withTitle: "打开系统设置")
             approval.addButton(withTitle: "稍后").keyEquivalent = "\u{1b}"
+            NSApp.activate()
             if approval.runModal() == .alertFirstButtonReturn {
-                SMAppService.openSystemSettingsLoginItems()
+                openLoginSettings()
             }
         }
+    }
+
+    @objc private func openLoginSettings() {
+        SMAppService.openSystemSettingsLoginItems()
     }
 
     private func registerShortcut(_ shortcut: Shortcut) -> OSStatus {
         hotKey.register(shortcut) { [weak self] in self?.beginSelection() }
     }
 
-    func beginSelection() {
+    @objc private func beginSelection() {
         guard !isPreparing, !selection.isActive, NSApp.modalWindow == nil else { return }
         guard hasScreenCapturePermission() else { return }
         isPreparing = true
