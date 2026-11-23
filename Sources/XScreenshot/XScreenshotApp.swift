@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var isPreparing = false
     private var hasRequestedPermission = false
     private var displayGeneration = 0
+    private var menuGeneration = 0
 
     private var savedShortcut: Shortcut {
         Shortcut.restored(from: UserDefaults.standard.data(forKey: Shortcut.storageKey))
@@ -71,11 +72,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        hotKey.beginMenuTracking(menu)
+        hotKey.beginMenuTracking { [weak self] in
+            self?.prepareSelection(capturingMenu: true)
+        }
     }
 
     func menuDidClose(_ menu: NSMenu) {
         hotKey.endMenuTracking()
+        menuGeneration += 1
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -157,25 +161,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func beginSelection() {
+        prepareSelection(capturingMenu: false)
+    }
+
+    private func prepareSelection(capturingMenu: Bool) {
         guard !isPreparing, !selection.isActive, NSApp.modalWindow == nil else { return }
+        if capturingMenu && !CGPreflightScreenCaptureAccess() {
+            statusItem.menu?.cancelTrackingWithoutAnimation()
+            Task { _ = hasScreenCapturePermission() }
+            return
+        }
         guard hasScreenCapturePermission() else { return }
         isPreparing = true
         let generation = displayGeneration
-        Task {
-            defer { isPreparing = false }
+        let trackedMenu = capturingMenu ? menuGeneration : nil
+        let sizes = AreaSelection.displaySizes()
+        // The main actor's tasks can be deferred while AppKit is tracking the menu.
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result: Result<[CGDirectDisplayID: DisplaySnapshot], Error>
             do {
-                let snapshots = try await ScreenCapture.snapshots(for: AreaSelection.displaySizes())
-                guard generation == displayGeneration else { return }
-                selection.begin(snapshots: snapshots) { [weak self] snapshot, rect, markup in
-                    self?.copy(snapshot: snapshot, rect: rect, markup: markup)
-                }
+                result = .success(try await ScreenCapture.snapshots(for: sizes, includingOwnWindows: capturingMenu))
             } catch {
-                guard generation == displayGeneration else { return }
-                if CGPreflightScreenCaptureAccess() {
-                    showAlert(title: "截图失败", message: error.localizedDescription)
-                } else {
-                    showPermissionAlert()
+                result = .failure(error)
+            }
+
+            if let trackedMenu {
+                RunLoop.main.perform(inModes: [.eventTracking, .default]) { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self, self.menuGeneration == trackedMenu else { return }
+                        self.statusItem.menu?.cancelTrackingWithoutAnimation()
+                    }
                 }
+            }
+
+            RunLoop.main.perform(inModes: [.default]) { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.finishSelection(result, generation: generation)
+                }
+            }
+        }
+    }
+
+    private func finishSelection(_ result: Result<[CGDirectDisplayID: DisplaySnapshot], Error>, generation: Int) {
+        defer { isPreparing = false }
+        guard generation == displayGeneration else { return }
+
+        switch result {
+        case .success(let snapshots):
+            selection.begin(snapshots: snapshots) { [weak self] snapshot, rect, markup in
+                self?.copy(snapshot: snapshot, rect: rect, markup: markup)
+            }
+        case .failure(let error):
+            if CGPreflightScreenCaptureAccess() {
+                showAlert(title: "截图失败", message: error.localizedDescription)
+            } else {
+                showPermissionAlert()
             }
         }
     }
