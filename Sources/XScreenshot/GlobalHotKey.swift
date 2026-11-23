@@ -107,14 +107,13 @@ final class GlobalHotKey {
         action = nil
     }
 
-    func beginMenuTracking(_ menu: NSMenu) {
+    func beginMenuTracking(onPress: @escaping @MainActor () -> Void) {
         guard hotKey != nil, menuTrackingObserver == nil else { return }
-        let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeSources.rawValue, true, 0) { [weak self, weak menu] _, _ in
+        let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeSources.rawValue, true, 0) { [weak self] _, _ in
             MainActor.assumeIsolated {
-                guard let self, self.hasPendingPress else { return }
-                self.endMenuTracking()
-                // AppKit defers delivery of the queued hotkey until menu tracking ends.
-                menu?.cancelTrackingWithoutAnimation()
+                // Consume the press here so AppKit does not deliver it again after tracking.
+                guard self?.consumePendingPress() == true else { return }
+                onPress()
             }
         }
         menuTrackingObserver = observer
@@ -127,14 +126,17 @@ final class GlobalHotKey {
         self.menuTrackingObserver = nil
     }
 
-    private var hasPendingPress: Bool {
-        FindSpecificEventInQueue(GetMainEventQueue(), { event, context in
+    private func consumePendingPress() -> Bool {
+        let queue = GetMainEventQueue()
+        let event = FindSpecificEventInQueue(queue, { event, context in
             MainActor.assumeIsolated {
                 guard let event, let context else { return DarwinBoolean(false) }
                 let hotKey = Unmanaged<GlobalHotKey>.fromOpaque(context).takeUnretainedValue()
                 return DarwinBoolean(hotKey.isActivePress(event))
             }
-        }, Unmanaged.passUnretained(self).toOpaque()) != nil
+        }, Unmanaged.passUnretained(self).toOpaque())
+        guard let event else { return false }
+        return RemoveEventFromQueue(queue, event) == noErr
     }
 
     private func isActivePress(_ event: EventRef) -> Bool {

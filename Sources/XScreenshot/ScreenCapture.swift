@@ -42,15 +42,17 @@ struct DisplaySnapshot {
     }
 }
 
-@MainActor
 enum ScreenCapture {
-    static func snapshots(for sizes: [CGDirectDisplayID: CGSize]) async throws -> [CGDirectDisplayID: DisplaySnapshot] {
+    static func snapshots(for sizes: [CGDirectDisplayID: CGSize],
+                          includingOwnWindows: Bool) async throws -> [CGDirectDisplayID: DisplaySnapshot] {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        let ownApps = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+        let excludedApps = includingOwnWindows ? [] : content.applications.filter {
+            $0.processID == ProcessInfo.processInfo.processIdentifier
+        }
         var snapshots: [CGDirectDisplayID: DisplaySnapshot] = [:]
         for display in content.displays {
             guard let size = sizes[display.displayID] else { continue }
-            let filter = SCContentFilter(display: display, excludingApplications: ownApps, exceptingWindows: [])
+            let filter = SCContentFilter(display: display, excludingApplications: excludedApps, exceptingWindows: [])
             let scale = CGFloat(filter.pointPixelScale)
             let configuration = SCStreamConfiguration()
             configuration.width = Int((size.width * scale).rounded())
@@ -64,6 +66,7 @@ enum ScreenCapture {
         return snapshots
     }
 
+    @MainActor
     static func copyToClipboard(_ image: CGImage) throws {
         let bitmap = NSBitmapImageRep(cgImage: image)
         let item = NSPasteboardItem()
